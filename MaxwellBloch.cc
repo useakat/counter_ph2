@@ -47,29 +47,24 @@ constexpr double NDENSITY = 2.6867805E19;    // [cm-3] number density ( 0 degC, 
 double Kayser2GRad( double k /*kayser*/ )
 {
   // k * 2 pi c
-  return k * 188.36515685l; /*[GRad/s]*/
+  return k * 188.36515685l; /*GRad/s*/
 }
 
 double GRad2Kayser( double omega /*GRad/s*/ )
 {
-  return omega / 188.36515685l; /*[kayser]*/
+  return omega / 188.36515685l; /*kayser*/
 }
 
 double NDensity2Amagat( double ndensity /*cm-3*/ )
 {
-  return ndensity / 2.6867805E19; /*[amagat]*/
-}
-
-double Intensity2Strength( double intensity /*GW/cm2*/ )
-{
-  return sqrt(intensity) * 8.68021098e5; /*[V/cm]*/
+  return ndensity / 2.6867805E19; /*amagat*/
 }
 
 
 
 // Grobal parameters for the simulation
-double AbsoluteError = 1E-5; // Absolute error used in Bulirsch-Stoer
-double RelativeError = 1E-5; // Relative error used in Bulirsch-Stoer
+double AbsoluteError = 1E-5;
+double RelativeError = 1E-5;
 int Xi = 100; // Half number of space divisions (-Xi -- Xi)
 constexpr int EdgeXi = 5; // One side number of space divisions in the Edge( -Xi-6, ..., -Xi-1) ( Xi+1, ..., Xi+6)
 int OutputXiPitch = 1;
@@ -77,12 +72,12 @@ double SimTimePitch = 0.05; // [ns]
 double OutputTimePitch = 0.1; // [ns]
 double NextOutputTime = 0;
 double SimTime = 20;    // [ns]
-constexpr int NVar = 7; // Number of variances in one division ( rho_gg, rho_ee, rho_ge, E^R+(driving), E^L-(driving), E^R-(trigger), E^L+(signal))
+constexpr int NVar = 11; // Number of variances in one division ( rho_gg, rho_ee, rho_ge, E^R+(driving), E^L-(driving), E^R-(trigger), E^L+(signal), F^R+, F^L-, R^R-, F^L+(time derivative of E) )
 ofstream ofs;
 
 enum SpatialAlgorithm { CentralDifference, WENO, };
 enum TimeAlgorithm { Dopri5, BulirschStoer, };
-enum EquationType { RHS0, RHS1, };
+enum EquationType { RHS0, RHS1, RHS2, };
 
 
 
@@ -154,7 +149,7 @@ public:
   const unsigned int NStates;
   const unsigned int NSideBand;
 
-  MaxwellBloch( double length, double pressure=6e4, double temperature=78. ); // [cm], [Pa], [K]
+  MaxwellBloch( double length ); // [cm]
   void operator() ( const state_type &r, state_type &drdt, const double t );
   unsigned int ConvertIndex( int ipar, int xi ) const { return (xi+Xi+EdgeXi)*NVar + ipar; }
   static void Write( const state_type &r, const double t );
@@ -190,6 +185,7 @@ public:
 
   void rhs0( const state_type &r, state_type &drdt, const double t ); // time : first-derivative; space : first-derivative
   void rhs1( const state_type &r, state_type &drdt, const double t ); // time : first-derivative; space : second-derivative
+  void rhs2( const state_type &r, state_type &drdt, const double t ); // time : second-derivative; space : second-derivative
 
   inline complex< double > CentralDifference1( const complex< double > &r0, const complex< double > &r1 ){ return (r1 - r0) / (2*m_DeltaZ); };
   inline complex< double > CentralDifference2( const complex< double > &r0, const complex< double > &r1, const complex< double > &r2 ){ return (r2 + r0 - 2.*r1) / pow(m_DeltaZ,2); };
@@ -200,8 +196,8 @@ public:
 };
 
 
-MaxwellBloch::MaxwellBloch( double length, double pressure, double temperature ) : 
-  m_L(length), m_DeltaZ(length/2/Xi), m_pressure(pressure), m_temperature(temperature), m_density(NDENSITY/101325.*m_pressure*273.15/m_temperature), NStates(NVar*(2*(Xi+EdgeXi)+1)), NSideBand(1)
+MaxwellBloch::MaxwellBloch( double length ) : 
+  m_L(length), m_DeltaZ(length/2/Xi), m_pressure(6e4), m_temperature(78.), m_density(NDENSITY/101325.*m_pressure*273.15/m_temperature), NStates(NVar*(2*(Xi+EdgeXi)+1)), NSideBand(1)
 {
 
   state.resize( NStates );
@@ -215,17 +211,20 @@ MaxwellBloch::MaxwellBloch( double length, double pressure, double temperature )
     state[ConvertIndex(4,xi)] = complex< double >( 0.0, 0.0 ); // E^L- (complex)
     state[ConvertIndex(5,xi)] = complex< double >( 0.0, 0.0 ); // E^R- (complex)
     state[ConvertIndex(6,xi)] = complex< double >( 0.0, 0.0 ); // E^L+ (complex)
+    state[ConvertIndex(7,xi)] = complex< double >( 0.0, 0.0 ); // F^R+ (complex)
+    state[ConvertIndex(8,xi)] = complex< double >( 0.0, 0.0 ); // F^L- (complex)
+    state[ConvertIndex(9,xi)] = complex< double >( 0.0, 0.0 ); // F^R- (complex)
+    state[ConvertIndex(10,xi)]= complex< double >( 0.0, 0.0 ); // F^L+ (complex)
   }
   for( int xi=-Xi; xi<Xi+1; xi++ ){
-    // Hydrogen gas locates only -Xi to +Xi.
     state[ConvertIndex(0,xi)] = complex< double >( 1.0, 0.0 ); // rho_gg (real)
   }
   
   // parameter setting
-  m_omega = new double[NSideBand]();
-  m_a     = new double[NSideBand]();
-  m_b     = new double[NSideBand]();
-  m_dp    = new double[NSideBand]();
+  m_omega = new double[NSideBand];
+  m_a     = new double[NSideBand];
+  m_b     = new double[NSideBand];
+  m_dp    = new double[NSideBand];
 
   m_gamma1g = 2*M_PI * 0.003; // 3 MHz
   m_gamma1e = m_gamma1g;
@@ -237,7 +236,7 @@ MaxwellBloch::MaxwellBloch( double length, double pressure, double temperature )
   m_squarewave = false;
 
   m_equation = RHS0;   // Time : first derivative; Space : first derivative
-  m_sAlgorithm = WENO; // WENO
+  m_sAlgorithm = CentralDifference; // WENO
   m_tAlgorithm = BulirschStoer; // Bulirsch-store
 
   SetDelta( 0 );
@@ -255,6 +254,9 @@ void MaxwellBloch::operator() ( const state_type &r, state_type &drdt, const dou
     break;
   case RHS1:
     rhs1( r, drdt, t); // time : first-derivative; space : second-derivative (modified MB equation for the soliton paper (PTEP) )
+    break;
+  case RHS2:
+    rhs2( r, drdt, t); // time : second-derivative; space : second-derivative (No SVEA approximation)
     break;
   }
 }
@@ -351,6 +353,12 @@ void MaxwellBloch::rhs0( const state_type &r, state_type &drdt, const double t )
       drdt[ibase+5] += I*m_omega[0]*m_density * (HBAR/EPSILON0) * ( (r[ibase]*m_a[0]+r[ibase+1]*m_b[0])*r[ibase+5] + 2.*m_dp[0]*conj(r[ibase+2]*r[ibase+6]) );
       drdt[ibase+6] += I*m_omega[0]*m_density * (HBAR/EPSILON0) * ( (r[ibase]*m_a[0]+r[ibase+1]*m_b[0])*r[ibase+6] + 2.*m_dp[0]*conj(r[ibase+2]*r[ibase+5]) );
     }
+
+    // Time derivative of electric field
+    for( int i=7; i<11; i++ ){
+      drdt[ibase+i] = 0;
+    }
+      
 
   }
 }
@@ -478,10 +486,146 @@ void MaxwellBloch::rhs1( const state_type &r, state_type &drdt, const double t )
     }
 
 
+    // Time derivative of electric field
+    for( int i=7; i<11; i++ ){
+      drdt[ibase+i] = 0;
+    }
+
   }
 }
 
 
+
+void MaxwellBloch::rhs2( const state_type &r, state_type &drdt, const double t )
+// time : second-derivative; space : second-derivative (No SVEA approximation)
+{
+#pragma omp parallel for
+  for( int xi=-Xi-EdgeXi; xi<Xi+EdgeXi+1; xi++ ){
+    CalculateRabiFrequency( r[ConvertIndex(3,xi)], r[ConvertIndex(4,xi)], r[ConvertIndex(5,xi)], r[ConvertIndex(6,xi)] );
+    
+    unsigned int ibase = ConvertIndex( 0, xi );
+    
+    // population
+    drdt[ibase+0] = -2.0 * imag( Rabi_ge * conj(r[ibase+2]) ); // rho_gg w/o decay
+    drdt[ibase+1] = -drdt[ibase+0];                            // rho_ee w/o decay
+    if( m_relaxation ){
+      drdt[ibase+0] += m_gamma1g * r[ibase+1];
+      drdt[ibase+1] -= m_gamma1e * r[ibase+1];
+    }
+    
+    // coherence
+    drdt[ibase+2] = I * Rabi_ge * ( r[ibase+1]-r[ibase] ); // force resonance w/o decay
+    if( !m_resonance ){
+      drdt[ibase+2] += I * r[ibase+2] * (Rabi_gg-Rabi_ee+m_delta); // stark shift
+    }
+    if( m_relaxation ){
+      drdt[ibase+2] -= m_gamma2 * r[ibase+2];
+    }
+
+    // electric field
+    for( int i=3; i<7; i++ ){
+      drdt[ibase+i] = r[ibase+i+4];
+    }
+
+    // time-derivative of electric field
+    for( int i=7; i<11; i++ ){
+      drdt[ibase+i] = 2.*I*m_omega[0] * r[ibase+i];
+    }
+    if( m_sAlgorithm == CentralDifference ){ // Central Difference
+      if( xi == -Xi-EdgeXi ){
+	// Left terminal
+	drdt[ibase+7]  +=   2.*I*m_omega[0]*C * CentralDifference1( GetERpTerminal(t), r[ibase+3+NVar] )  + C*C * CentralDifference2( GetERpTerminal(t), r[ibase+3], r[ibase+3+NVar]);
+	drdt[ibase+8]  += - 2.*I*m_omega[0]*C * CentralDifference1( r[ibase+4], r[ibase+4+NVar] )         + C*C * CentralDifference2( r[ibase+4], r[ibase+4], r[ibase+4+NVar] );
+	drdt[ibase+9]  +=   2.*I*m_omega[0]*C * CentralDifference1( GetTrigTerminal(t), r[ibase+5+NVar] ) + C*C * CentralDifference2( GetTrigTerminal(t), r[ibase+5], r[ibase+5+NVar] );
+	drdt[ibase+10] += - 2.*I*m_omega[0]*C * CentralDifference1( r[ibase+6], r[ibase+6+NVar] )         + C*C * CentralDifference2( r[ibase+6], r[ibase+6], r[ibase+6+NVar] );
+      }else if( xi == Xi+EdgeXi ){
+	// Right terminal
+	drdt[ibase+7]  +=   2.*I*m_omega[0]*C * CentralDifference1( r[ibase+3-NVar], r[ibase+3] )        + C*C * CentralDifference2( r[ibase+3-NVar], r[ibase+3], r[ibase+3] );
+	drdt[ibase+8]  += - 2.*I*m_omega[0]*C * CentralDifference1( r[ibase+4-NVar], GetELmTerminal(t) ) + C*C * CentralDifference2( r[ibase+4-NVar], r[ibase+4], GetELmTerminal(t) );
+	drdt[ibase+9]  +=   2.*I*m_omega[0]*C * CentralDifference1( r[ibase+5-NVar], r[ibase+5] )        + C*C * CentralDifference2( r[ibase+5-NVar], r[ibase+5], r[ibase+5] );
+	drdt[ibase+10] += - 2.*I*m_omega[0]*C * CentralDifference1( r[ibase+6-NVar], 0 )                 + C*C * CentralDifference2( r[ibase+6-NVar], r[ibase+6], 0 );
+      }else{
+	drdt[ibase+7]  +=   2.*I*m_omega[0]*C * CentralDifference1( r[ibase+3-NVar], r[ibase+3+NVar] ) + C*C * CentralDifference2( r[ibase+3-NVar], r[ibase+3], r[ibase+3+NVar] );
+	drdt[ibase+8]  += - 2.*I*m_omega[0]*C * CentralDifference1( r[ibase+4-NVar], r[ibase+4+NVar] ) + C*C * CentralDifference2( r[ibase+4-NVar], r[ibase+4], r[ibase+4+NVar] );
+	drdt[ibase+9]  +=   2.*I*m_omega[0]*C * CentralDifference1( r[ibase+5-NVar], r[ibase+5+NVar] ) + C*C * CentralDifference2( r[ibase+5-NVar], r[ibase+5], r[ibase+5+NVar] );
+	drdt[ibase+10] += - 2.*I*m_omega[0]*C * CentralDifference1( r[ibase+6-NVar], r[ibase+6+NVar] ) + C*C * CentralDifference2( r[ibase+6-NVar], r[ibase+6], r[ibase+6+NVar] );
+      }
+    }else{ // WENO (linear weights)
+      if( xi == -Xi-EdgeXi ){ // Left terminal
+	drdt[ibase+7]  += - 2.*I*m_omega[0]*C * WENO1( GetERpTerminal(t,-Xi-EdgeXi-3), GetERpTerminal(t,-Xi-EdgeXi-2), GetERpTerminal(t), r[ibase+3], r[ibase+3+NVar], r[ibase+3+2*NVar] )
+	  + C*C * WENO2( GetERpTerminal(t,-Xi-EdgeXi-3), GetERpTerminal(t,-Xi-EdgeXi-2), GetERpTerminal(t), r[ibase+3], r[ibase+3+NVar], r[ibase+3+2*NVar], r[ibase+3+3*NVar] );
+	drdt[ibase+8]  += - 2.*I*m_omega[0]*C * WENO1( r[ibase+4+3*NVar], r[ibase+4+2*NVar], r[ibase+4+NVar], r[ibase+4], r[ibase+4], r[ibase+4] )
+	  + C*C * WENO2( r[ibase+4+3*NVar], r[ibase+4+2*NVar], r[ibase+4+NVar], r[ibase+4], r[ibase+4], r[ibase+4], r[ibase+4] );
+	drdt[ibase+9]  += - 2.*I*m_omega[0]*C * WENO1( GetTrigTerminal(t,-Xi-EdgeXi-3), GetTrigTerminal(t,-Xi-EdgeXi-2), GetTrigTerminal(t), r[ibase+5], r[ibase+5+NVar], r[ibase+5+2*NVar] )
+	  + C*C * WENO2( GetTrigTerminal(t,-Xi-EdgeXi-3), GetTrigTerminal(t,-Xi-EdgeXi-2), GetTrigTerminal(t), r[ibase+5], r[ibase+5+NVar], r[ibase+5+2*NVar], r[ibase+5+3*NVar] );
+	drdt[ibase+10] += - 2.*I*m_omega[0]*C * WENO1( r[ibase+6+3*NVar], r[ibase+6+2*NVar], r[ibase+6+NVar], r[ibase+6], r[ibase+6], r[ibase+6] )
+	  + C*C * WENO2( r[ibase+6+3*NVar], r[ibase+6+2*NVar], r[ibase+6+NVar], r[ibase+6], r[ibase+6], r[ibase+6], r[ibase+6] );
+      }else if( xi == -Xi-EdgeXi+1 ){
+	drdt[ibase+7]  += - 2.*I*m_omega[0]*C * WENO1( GetERpTerminal(t,-Xi-EdgeXi-2), GetERpTerminal(t), r[ibase+3-NVar], r[ibase+3], r[ibase+3+NVar], r[ibase+3+2*NVar] )
+	  + C*C * WENO2( GetERpTerminal(t,-Xi-EdgeXi-2), GetERpTerminal(t), r[ibase+3-NVar], r[ibase+3], r[ibase+3+NVar], r[ibase+3+2*NVar], r[ibase+3+3*NVar] );
+	drdt[ibase+8]  += - 2.*I*m_omega[0]*C * WENO1( r[ibase+4+3*NVar], r[ibase+4+2*NVar], r[ibase+4+NVar], r[ibase+4], r[ibase+4-NVar], r[ibase+4-NVar] )
+	  + C*C * WENO2( r[ibase+4+3*NVar], r[ibase+4+2*NVar], r[ibase+4+NVar], r[ibase+4], r[ibase+4-NVar], r[ibase+4-NVar], r[ibase+4-NVar] );
+	drdt[ibase+9]  += - 2.*I*m_omega[0]*C * WENO1( GetTrigTerminal(t,-Xi-EdgeXi-2), GetTrigTerminal(t), r[ibase+5-NVar], r[ibase+5], r[ibase+5+NVar], r[ibase+5+2*NVar] )
+	  + C*C * WENO2( GetTrigTerminal(t,-Xi-EdgeXi-2), GetTrigTerminal(t), r[ibase+5-NVar], r[ibase+5], r[ibase+5+NVar], r[ibase+5+2*NVar], r[ibase+5+3*NVar] );
+	drdt[ibase+10] += - 2.*I*m_omega[0]*C * WENO1( r[ibase+6+3*NVar], r[ibase+6+2*NVar], r[ibase+6+NVar], r[ibase+6], r[ibase+6-NVar], r[ibase+6-NVar] )
+	  + C*C * WENO2( r[ibase+6+3*NVar], r[ibase+6+2*NVar], r[ibase+6+NVar], r[ibase+6], r[ibase+6-NVar], r[ibase+6-NVar], r[ibase+6-NVar] );
+      }else if( xi == -Xi-EdgeXi+2 ){
+	drdt[ibase+7]  += - 2.*I*m_omega[0]*C * WENO1( GetERpTerminal(t), r[ibase+3-2*NVar], r[ibase+3-NVar], r[ibase+3], r[ibase+3+NVar], r[ibase+3+2*NVar] )
+	  + C*C * WENO2( GetERpTerminal(t), r[ibase+3-2*NVar], r[ibase+3-NVar], r[ibase+3], r[ibase+3+NVar], r[ibase+3+2*NVar], r[ibase+3+3*NVar] );
+	drdt[ibase+8]  += - 2.*I*m_omega[0]*C * WENO1( r[ibase+4+3*NVar], r[ibase+4+2*NVar], r[ibase+4+NVar], r[ibase+4], r[ibase+4-NVar], r[ibase+4-2*NVar] )
+	  + C*C * WENO2( r[ibase+4+3*NVar], r[ibase+4+2*NVar], r[ibase+4+NVar], r[ibase+4], r[ibase+4-NVar], r[ibase+4-2*NVar], r[ibase+4-2*NVar] );
+	drdt[ibase+9]  += - 2.*I*m_omega[0]*C * WENO1( GetTrigTerminal(t), r[ibase+5-2*NVar], r[ibase+5-NVar], r[ibase+5], r[ibase+5+NVar], r[ibase+5+2*NVar] )
+	  + C*C * WENO2( GetTrigTerminal(t), r[ibase+5-2*NVar], r[ibase+5-NVar], r[ibase+5], r[ibase+5+NVar], r[ibase+5+2*NVar], r[ibase+5+3*NVar] );
+	drdt[ibase+10] += - 2.*I*m_omega[0]*C * WENO1( r[ibase+6+3*NVar], r[ibase+6+2*NVar], r[ibase+6+NVar], r[ibase+6], r[ibase+6-NVar], r[ibase+6-2*NVar] )
+	  + C*C * WENO2( r[ibase+6+3*NVar], r[ibase+6+2*NVar], r[ibase+6+NVar], r[ibase+6], r[ibase+6-NVar], r[ibase+6-2*NVar], r[ibase+6-2*NVar] );
+      }else if( xi == Xi+EdgeXi-2 ){
+	drdt[ibase+7]  += - 2.*I*m_omega[0]*C * WENO1( r[ibase+3-3*NVar], r[ibase+3-2*NVar], r[ibase+3-NVar], r[ibase+3], r[ibase+3+NVar], r[ibase+3+2*NVar] )
+	  + C*C * WENO2( r[ibase+3-3*NVar], r[ibase+3-2*NVar], r[ibase+3-NVar], r[ibase+3], r[ibase+3+NVar], r[ibase+3+2*NVar], r[ibase+3+2*NVar] );
+	drdt[ibase+8]  += - 2.*I*m_omega[0]*C * WENO1( GetELmTerminal(t), r[ibase+4+2*NVar], r[ibase+4+NVar], r[ibase+4], r[ibase+4-NVar], r[ibase+4-2*NVar] )
+	  + C*C * WENO2( GetELmTerminal(t), r[ibase+4+2*NVar], r[ibase+4+NVar], r[ibase+4], r[ibase+4-NVar], r[ibase+4-2*NVar], r[ibase+4-3*NVar] );
+	drdt[ibase+9]  += - 2.*I*m_omega[0]*C * WENO1( r[ibase+5-3*NVar], r[ibase+5-2*NVar], r[ibase+5-NVar], r[ibase+5], r[ibase+5+NVar], r[ibase+5+2*NVar] )
+	  + C*C * WENO2( r[ibase+5-3*NVar], r[ibase+5-2*NVar], r[ibase+5-NVar], r[ibase+5], r[ibase+5+NVar], r[ibase+5+2*NVar], r[ibase+5+2*NVar] );
+	drdt[ibase+10] += - 2.*I*m_omega[0]*C * WENO1( 0, r[ibase+6+2*NVar], r[ibase+6+NVar], r[ibase+6], r[ibase+6-NVar], r[ibase+6-2*NVar] )
+	  + C*C * WENO2( 0, r[ibase+6+2*NVar], r[ibase+6+NVar], r[ibase+6], r[ibase+6-NVar], r[ibase+6-2*NVar], r[ibase+6-3*NVar] );
+      }else if( xi == Xi+EdgeXi-1 ){
+	drdt[ibase+7]  += - 2.*I*m_omega[0]*C * WENO1( r[ibase+3-3*NVar], r[ibase+3-2*NVar], r[ibase+3-NVar], r[ibase+3], r[ibase+3+NVar], r[ibase+3+NVar] )
+	  + C*C * WENO2( r[ibase+3-3*NVar], r[ibase+3-2*NVar], r[ibase+3-NVar], r[ibase+3], r[ibase+3+NVar], r[ibase+3+NVar], r[ibase+3+NVar] );
+	drdt[ibase+8]  += - 2.*I*m_omega[0]*C * WENO1( GetELmTerminal(t,Xi+EdgeXi+2), GetELmTerminal(t), r[ibase+4+NVar], r[ibase+4], r[ibase+4-NVar], r[ibase+4-2*NVar] )
+	  + C*C * WENO2( GetELmTerminal(t,Xi+EdgeXi+2), GetELmTerminal(t), r[ibase+4+NVar], r[ibase+4], r[ibase+4-NVar], r[ibase+4-2*NVar], r[ibase+4-3*NVar] );
+	drdt[ibase+9]  += - 2.*I*m_omega[0]*C * WENO1( r[ibase+5-3*NVar], r[ibase+5-2*NVar], r[ibase+5-NVar], r[ibase+5], r[ibase+5+NVar], r[ibase+5+NVar] )
+	  + C*C * WENO2( r[ibase+5-3*NVar], r[ibase+5-2*NVar], r[ibase+5-NVar], r[ibase+5], r[ibase+5+NVar], r[ibase+5+NVar], r[ibase+5+NVar] );
+	drdt[ibase+10] += - 2.*I*m_omega[0]*C * WENO1( 0, 0, r[ibase+6+NVar], r[ibase+6], r[ibase+6-NVar], r[ibase+6-2*NVar] )
+	  + C*C * WENO2( 0, 0, r[ibase+6+NVar], r[ibase+6], r[ibase+6-NVar], r[ibase+6-2*NVar], r[ibase+6-3*NVar] );
+      }else if( xi == Xi+EdgeXi ){ // Right terminal
+	drdt[ibase+7]  += - 2.*I*m_omega[0]*C * WENO1( r[ibase+3-3*NVar], r[ibase+3-2*NVar], r[ibase+3-NVar], r[ibase+3], r[ibase+3], r[ibase+3] )
+	  + C*C * WENO2( r[ibase+3-3*NVar], r[ibase+3-2*NVar], r[ibase+3-NVar], r[ibase+3], r[ibase+3], r[ibase+3], r[ibase+3] );
+	drdt[ibase+8]  += - 2.*I*m_omega[0]*C * WENO1( GetELmTerminal(t,Xi+EdgeXi+3), GetELmTerminal(t,Xi+EdgeXi+2), GetELmTerminal(t), r[ibase+4], r[ibase+4-NVar], r[ibase+4-2*NVar] )
+	  + C*C * WENO2( GetELmTerminal(t,Xi+EdgeXi+3), GetELmTerminal(t,Xi+EdgeXi+2), GetELmTerminal(t), r[ibase+4], r[ibase+4-NVar], r[ibase+4-2*NVar], r[ibase+4-3*NVar] );
+	drdt[ibase+9]  += - 2.*I*m_omega[0]*C * WENO1( r[ibase+5-3*NVar], r[ibase+5-2*NVar], r[ibase+5-NVar], r[ibase+5], r[ibase+5], r[ibase+5] )
+	  + C*C * WENO2( r[ibase+5-3*NVar], r[ibase+5-2*NVar], r[ibase+5-NVar], r[ibase+5], r[ibase+5], r[ibase+5], r[ibase+5] );
+	drdt[ibase+10] += - 2.*I*m_omega[0]*C * WENO1( 0, 0, 0, r[ibase+6], r[ibase+6-NVar], r[ibase+6-2*NVar] )
+	  + C*C * WENO2(  0, 0, 0, r[ibase+6], r[ibase+6-NVar], r[ibase+6-2*NVar], r[ibase+6-3*NVar] );
+      }else{
+	drdt[ibase+7]  += - 2.*I*m_omega[0]*C * WENO1( r[ibase+3-3*NVar], r[ibase+3-2*NVar], r[ibase+3-NVar], r[ibase+3], r[ibase+3+NVar], r[ibase+3+2*NVar] )
+	  + C*C * WENO2( r[ibase+3-3*NVar], r[ibase+3-2*NVar], r[ibase+3-NVar], r[ibase+3], r[ibase+3+NVar], r[ibase+3+2*NVar], r[ibase+3+3*NVar] );
+	drdt[ibase+8]  += - 2.*I*m_omega[0]*C * WENO1( r[ibase+4+3*NVar], r[ibase+4+2*NVar], r[ibase+4+NVar], r[ibase+4], r[ibase+4-NVar], r[ibase+4-2*NVar] )
+	  + C*C * WENO2(  r[ibase+4+3*NVar], r[ibase+4+2*NVar], r[ibase+4+NVar], r[ibase+4], r[ibase+4-NVar], r[ibase+4-2*NVar], r[ibase+4-3*NVar] );
+	drdt[ibase+9]  += - 2.*I*m_omega[0]*C * WENO1( r[ibase+5-3*NVar], r[ibase+5-2*NVar], r[ibase+5-NVar], r[ibase+5], r[ibase+5+NVar], r[ibase+5+2*NVar] )
+	  + C*C * WENO2( r[ibase+5-3*NVar], r[ibase+5-2*NVar], r[ibase+5-NVar], r[ibase+5], r[ibase+5+NVar], r[ibase+5+2*NVar], r[ibase+5+3*NVar] );
+	drdt[ibase+10] += - 2.*I*m_omega[0]*C * WENO1( r[ibase+6+3*NVar], r[ibase+6+2*NVar], r[ibase+6+NVar], r[ibase+6], r[ibase+6-NVar], r[ibase+6-2*NVar] )
+	  + C*C * WENO2(  r[ibase+6+3*NVar], r[ibase+6+2*NVar], r[ibase+6+NVar], r[ibase+6], r[ibase+6-NVar], r[ibase+6-2*NVar], r[ibase+6-3*NVar] );
+      }
+    }
+    if( m_absorption ){
+      drdt[ibase+7] += pow(m_omega[0],2) * m_density * (HBAR/EPSILON0) * ( (r[ibase]*m_a[0]+r[ibase+1]*m_b[0])*r[ibase+3] + 2.*m_dp[0]*conj(r[ibase+2]*r[ibase+4]) );
+      drdt[ibase+8] += pow(m_omega[0],2) * m_density * (HBAR/EPSILON0) * ( (r[ibase]*m_a[0]+r[ibase+1]*m_b[0])*r[ibase+4] + 2.*m_dp[0]*conj(r[ibase+2]*r[ibase+3]) );
+      drdt[ibase+9] += pow(m_omega[0],2) * m_density * (HBAR/EPSILON0) * ( (r[ibase]*m_a[0]+r[ibase+1]*m_b[0])*r[ibase+5] + 2.*m_dp[0]*conj(r[ibase+2]*r[ibase+6]) );
+      drdt[ibase+10]+= pow(m_omega[0],2) * m_density * (HBAR/EPSILON0) * ( (r[ibase]*m_a[0]+r[ibase+1]*m_b[0])*r[ibase+6] + 2.*m_dp[0]*conj(r[ibase+2]*r[ibase+5]) );
+    }
+
+
+  }
+}
 
 
 
@@ -522,15 +666,15 @@ void MaxwellBloch::Write( const state_type &r, const double t )
   ofs << t;
   
 
-  for( int i=0; i<NVar; i++ ){ // left edge point
+  for( int i=0; i<7; i++ ){ // left edge point
     ofs << '\t' << r[i].real() << '\t' << r[i].imag();
   }
   for( int ipos = EdgeXi; ipos<2*Xi+EdgeXi+1; ipos+=OutputXiPitch ){ // target inside
-    for( int i = ipos*NVar; i<ipos*NVar+NVar; i++ ){
+    for( int i = ipos*NVar; i<ipos*NVar+7; i++ ){
       ofs << '\t' << r[i].real() << '\t' << r[i].imag();
     }
   }
-  for( int i=2*(Xi+EdgeXi)*NVar; i<2*(Xi+EdgeXi)*NVar+NVar; i++ ){ // right edge point
+  for( int i=2*(Xi+EdgeXi)*NVar; i<2*(Xi+EdgeXi)*NVar+7; i++ ){ // right edge point
     ofs << '\t' << r[i].real() << '\t' << r[i].imag();
   }
   ofs << '\n' << flush;
@@ -621,6 +765,7 @@ void MaxwellBloch::CalculatePolarizabilities( void )
 
   for( unsigned int q=0; q<NSideBand; q++ ){
     double ws = GRad2Kayser( m_omega[q] );
+    //double ws = 1879.699248; // 532 nm
     double sa=0, sb=0, sd=0;
 
     for( int j=0; j<Hydrogen::nOmegaB; j++ ){
@@ -662,13 +807,19 @@ void MaxwellBloch::CalculateRabiFrequency( const complex< double > ERp, const co
   Rabi_ee = Rabi_gg * m_b[0] / m_a[0];
   Rabi_ge = m_dp[0] * ( conj( ERp*ELm ) + conj( ERm*ELp ) );
 
+  // For debug
+  /*
+  Rabi_gg = 1;
+  Rabi_ee = 1;
+  Rabi_ge = 1.;
+  */
 }
 
 
 complex< double > MaxwellBloch::GetERpTerminal( const double time, const int xi )
 {
   double retime = time - (xi+Xi+EdgeXi+1)*m_DeltaZ/C;
-  double Efield = Intensity2Strength(m_I_ERp); // peak electric field [V/cm]
+  double Efield = sqrt(m_I_ERp) * 8.68021098e5; // peak electric field [V/cm]
 
   if( !m_squarewave ){
     Efield *= exp( - pow((retime-m_D_ERp)/m_T_ERp, 2) / 4. );
@@ -682,7 +833,7 @@ complex< double > MaxwellBloch::GetERpTerminal( const double time, const int xi 
 complex< double > MaxwellBloch::GetELmTerminal( const double time, const int xi )
 {
   double retime = time + (xi-Xi-EdgeXi-1)*m_DeltaZ/C; 
-  double Efield = Intensity2Strength(m_I_ELm); // peak electric field [V/cm]
+  double Efield = sqrt(m_I_ELm) * 8.68021098e5; // peak electric field [V/cm]
 
   if( !m_squarewave ){
     Efield *= exp( - pow((retime-m_D_ELm)/m_T_ELm, 2) /4. );
@@ -695,7 +846,7 @@ complex< double > MaxwellBloch::GetELmTerminal( const double time, const int xi 
 complex< double > MaxwellBloch::GetTrigTerminal( const double time, const int xi )
 {
   double retime = time - (xi+Xi+EdgeXi+1)*m_DeltaZ/C;
-  double Efield = Intensity2Strength(m_I_Trig); // peak electric field [V/cm]
+  double Efield = sqrt(m_I_Trig) * 8.68021098e5; // peak electric field [V/cm]
 
   if( !m_squarewave ){
     Efield *= exp( - pow((retime-m_D_Trig)/m_T_Trig, 2) /4. );
@@ -742,10 +893,9 @@ void MaxwellBloch::DumpRefractiveIndex( const double temp /* [K] */ ) const
 int main(int argc, char **argv)
 {
 
-  // Arguments check
+  // Argument check
   /* Arg0 : ./MaxwellBloch
-     Arg1 : input setup file name
-     Arg2 : output file name
+     Arg1 : output file name
   */
   if( argc != 3 ){
     cerr << "Argument error!" << endl;
@@ -757,10 +907,16 @@ int main(int argc, char **argv)
     return -1;
   }
 
+  // Open MP
+#ifdef _OPENMP
+  cerr << "OpenMP is used. " << omp_get_max_threads() << " threads is working." << endl;
+#else
+  cerr << "OpenMP is not used." << endl;
+#endif
+
 
   // Setting
   double TargetLength = 0;
-  double TargetPressure = 0;
   double Detuning = 0;
   double Gamma_1g = 0;
   double Gamma_1e = 0;
@@ -781,7 +937,6 @@ int main(int argc, char **argv)
   int EType = 0;
   int SAlg = 0;
   int TAlg = 0;
-  int nThreads = 0;
 
   ifstream ifs( argv[1] );
   string line;
@@ -790,7 +945,6 @@ int main(int argc, char **argv)
     string header;
     iss >> header;
     if( header == "TargetLength" ){ iss >> TargetLength; }
-    else if( header == "Pressure" ){ iss >> TargetPressure; }
     else if( header == "Xi" ){ iss >> Xi; }
     else if( header == "OutputXiPitch" ){ iss >> OutputXiPitch; }
     else if( header == "SimulationTime" ){ iss >> SimTime; }
@@ -816,22 +970,11 @@ int main(int argc, char **argv)
     else if( header == "Equation" ){ iss >> EType; }
     else if( header == "SpatialAlgorithm" ){ iss >> SAlg; }
     else if( header == "TimeAlgorithm" ){ iss >> TAlg; }
-    else if( header == "OpenMP" ){ iss >> nThreads; omp_set_num_threads(nThreads); }
   }
-
-  // Open MP
-#ifdef _OPENMP
-  cerr << "OpenMP is used. " << omp_get_max_threads() << " threads is working." << endl;
-#else
-  cerr << "OpenMP is not used." << endl;
-#endif
-
-
   
 
 
-
-  MaxwellBloch mb( TargetLength, TargetPressure ); // cm
+  MaxwellBloch mb( TargetLength ); // cm
 
   mb.SetERpIntensity( ERpIntensity ); // GW/cm2
   mb.SetELmIntensity( ELmIntensity ); // GW/cm2
@@ -865,7 +1008,7 @@ int main(int argc, char **argv)
 
 
 
-  ofs << std::hexfloat;
+  //ofs << std::hexfloat;
 
   
   // dt is the initial step size. The actual step size is changed according to error control of the stepper. For the last step, the step size will be reduced to ensure we end exactly at t1. The observer is called after each time step. (No dense output)
@@ -881,9 +1024,6 @@ int main(int argc, char **argv)
     bulirsch_stoer_dense_out< MaxwellBloch::state_type > stepper( AbsoluteError, RelativeError, 1.0 , 1.0 );
     integrate_const( stepper, mb, mb.state, 0.0, SimTime, SimTimePitch, MaxwellBloch::Write );
     break;
-  default:
-    cerr << "Time algorithm " << mb.GetTimeAlgorithm() << " is not defined." << endl;
-    return -1;
   }
 
   //integrate_const( runge_kutta4< MaxwellBloch::state_type >(), mb, mb.state, 0.0, SimTime, SimTimePitch, MaxwellBloch::Write );
