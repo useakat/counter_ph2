@@ -1,0 +1,29 @@
+TargetLength	20	cm
+Xi		200
+OutputXiPitch	2
+SimulationTime	20	ns
+SimTimePitch	0.001	ns
+OutputTimePitch	0.1	ns
+Detuning/2pi	0	Grad/s
+Gamma1g/2pi	0.003	GHz
+Gamma1e/2pi	0.003	GHz
+Gamma2/2pi	0.0654	GHz
+ERpIntensity	0.01	GW/cm2
+ELmIntensity	0.01	GW/cm2
+ERpWidth	2	ns
+ELmWidth	2	ns
+ERpDelay 	10	ns
+ELmDelay 	10	ns
+TrigIntensity	0.0001	GW/cm2
+TrigWidth	2	ns
+TrigDelay	10	ns
+ForceResonance	0
+Absorption	1
+Relaxation	1
+Square		0
+Equation	0	(time: first-derivative; space: first-derivative)
+SpatialAlgorithm	1	(WENO)
+TimeAlgorithm	1	(Bulirsch-Stoer)
+AbsoluteError	1e-5
+RelativeError	1e-5
+OpenMP		2
